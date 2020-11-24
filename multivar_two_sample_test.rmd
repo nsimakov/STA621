@@ -1,0 +1,392 @@
+---
+title: "Multi-variate Two-Sample Test"
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(MASS)
+library(dplyr)
+library(ggplot2)
+library(microbenchmark)
+library(parallel)
+library(Hotelling)
+```
+
+# Parallel
+
+```{r}
+gen_data_norm <- function(m,n,p,mu,C,mc) {
+  m_data <- list()
+  for(i_mc in 1:mc) {
+    X <- matrix(rnorm(n=m*p),nrow = m, ncol = p)
+    Y <- matrix(rnorm(n=m*p,mean = mu),nrow = m, ncol = p)
+    i_x_rnd <- sample.int(n = m, size=1)
+    u_list <- list()
+    for(ipert in 1:C) {
+      u_list[[ipert]] <- sample(n + m)
+    }
+    
+    m_data[[i_mc]] <- list(
+      params = list(
+        dist="norm",
+        m=m,
+        n=n,
+        p=p,
+        C=C,
+        mu=mu
+      ),
+      X=X,
+      Y=Y,
+      i_x_rnd=i_x_rnd,
+      u_list=u_list
+    )
+  }
+  m_data
+}
+
+#calculate test stat and pvalue
+calc_teststat_pvalues <- function(exp_data) {
+  # exp_data<-mc_data[[1]]
+  m <- exp_data$params$m
+  n <- exp_data$params$n
+  p <- exp_data$params$p
+  C <- exp_data$params$C
+  X <- exp_data$X
+  Y <- exp_data$Y
+  i_x_rnd <- exp_data$i_x_rnd
+  u_list <- exp_data$u_list
+
+  QPJK_0 <- rep_len(NA,m)
+  QPJK_mat <- matrix(NA, nrow = C, ncol = m)
+  
+  PJK_0 <- rep_len(NA,m)
+  PJK_mat <- matrix(NA, nrow = C, ncol = m)
+    
+  Z <- rbind(X, Y)
+  
+  d <- apply(Z, 1, FUN=function(Z_i){sqrt(colSums((t(X)-Z_i)^2))})
+    
+  for(i_x in 1:m) {
+    #i_x <- 1L
+    l_ik <- d[i_x,-i_x]
+    Rik <- rank(d[i_x,-i_x])
+    
+    d_x <- l_ik[1:(m-1)]
+    d_y <- l_ik[m:(n+m-1)]
+    wt <- wilcox.test(x=d_x,y=d_y,alternative = "less")
+    
+    # JK test
+    QPJK_0[i_x] <- wt$p.value
+    PJK_0[i_x] <- sum(Rik[(m+1):(m+n-1)])
+    
+    for(ipert in 1:C) {
+      #random permutation of labels 1,..,n+m
+      # ipert <- 1
+      u <- u_list[[ipert]]
+      k <- 1:(n+m)
+      u_i <- k[u==i_x]
+      
+      #keep same i
+      l_uik <- d[i_x,u[-u_i]]
+      Ruik <- rank(l_uik)
+      #alt. use pertubed i
+      #l_uik
+      
+      d_x <- l_uik[1:(m-1)]
+      d_y <- l_uik[m:(n+m-1)]
+      
+      wt <- wilcox.test(x=d_x,y=d_y,alternative = "greater")
+      
+      # PJK test
+      QPJK_mat[ipert,i_x] <- wt$p.value
+      PJK_mat[ipert,i_x] <- sum(Ruik[(m+1):(m+n-1)])
+    }
+  }
+  
+  JK_pval <- QPJK_0[i_x_rnd]
+  PJK_pval <- sum(QPJK_mat[,i_x_rnd] < QPJK_0[i_x_rnd])/C
+  
+  Med_0 <- median(QPJK_0)
+  Med_b <- apply(QPJK_mat, 1, median)
+  Med_pval <- sum(Med_b<Med_0)/C
+  
+  Tip_0 <- min(QPJK_0)
+  Tip_b <- apply(QPJK_mat, 1, min)
+  Tip_pval <- sum(Tip_b<Tip_0)/C
+  
+  ht <- hotelling.test(X,Y)
+  if(is.null(ht)){
+    Ht_pval <- NA
+  } else {
+    Ht_pval <- ht$pval
+  }
+  
+  list(
+    params = exp_data$params,
+    X=X,
+    Y=Y,
+    i_x_rnd=i_x_rnd,
+    u_list=u_list,
+    PJK_0=PJK_0,
+    PJK_mat=PJK_mat,
+    QPJK_0=QPJK_0,
+    QPJK_mat=QPJK_mat,
+    JK_pval =JK_pval,
+    PJK_pval = PJK_pval,
+    Med_pval = Med_pval,
+    Tip_pval = Tip_pval,
+    Ht_pval = Ht_pval
+  )
+}
+
+# summarize and calculate powers
+calc_power <- function(semiresults,alpha) {
+  # semiresults <- mc_semiresults
+  m <- semiresults[[1]]$params$m
+  n <- semiresults[[1]]$params$n
+  C <- semiresults[[1]]$params$C
+  mc <- length(semiresults)
+  
+  power <- list(
+    params = semiresults[[1]]$params,
+    JK = 0L,
+    PJK = 0L,
+    Med = 0L,
+    Tip = 0L,
+    Ht = 0L
+  )
+
+  for(i_mc in 1:mc) {
+    # i_mc <- 1
+    i_x_rnd <- semiresults[[i_mc]]$i_x_rnd
+    PJK_0 <- semiresults[[i_mc]]$PJK_0
+    PJK_mat <- semiresults[[i_mc]]$PJK_mat
+    QPJK_0 <- semiresults[[i_mc]]$QPJK_0
+    QPJK_mat <- semiresults[[i_mc]]$QPJK_mat
+    
+    JK_pval <- semiresults[[i_mc]]$JK_pval
+    PJK_pval <- semiresults[[i_mc]]$PJK_pval
+    Med_pval <- semiresults[[i_mc]]$Med_pval
+    Tip_pval <- semiresults[[i_mc]]$Tip_pval
+    Ht_pval <- semiresults[[i_mc]]$Ht_pval
+    
+    power$JK <- power$JK + (JK_pval < alpha)
+    power$PJK <- power$PJK + (PJK_pval < alpha)
+    power$Med <- power$Med + (Med_pval < alpha)
+    power$Tip <- power$Tip + (Tip_pval < alpha)
+    if(is.na(Ht_pval) | is.na(power$Ht)){
+      power$Ht <- NA
+    } else {
+      power$Ht <- power$Ht + (Ht_pval < alpha)
+    }
+    
+  }
+  power$JK <- power$JK/mc
+  power$PJK <- power$PJK/mc
+  power$Med <- power$Med/mc
+  power$Tip <- power$Tip/mc
+  power$Ht <- power$Ht/mc
+  
+  power
+}
+```
+
+
+
+
+```{r}
+alpha <- 0.05
+mc_results <- list()
+
+system.time({
+
+for(m in c(10L,30L,50L)) {
+  for(p in c(2L,4L,18L)) {
+    for(mu in c(0, 0.52, 0.77, 1.01)) {
+      set.seed(20201121L)
+      
+      data_set <- paste0("norm n=m=",m," p=",p," mu=", mu)
+      cat(paste0("Doing: ",data_set,"\n"))
+      mc_data <- gen_data_norm(m=m,n=m,p=p,mu=mu,C=250L,mc=1000L)
+      
+      mc_semiresults <- mclapply(mc_data, calc_teststat_pvalues, mc.cores = 8)
+      
+      rm(mc_data)
+      save(
+          list=c("mc_semiresults"),
+          file=paste0(data_set,".Rdata")
+      )
+      
+      mc_results[[data_set]] <- calc_power(mc_semiresults,alpha)
+      rm(mc_semiresults)
+    }
+  }
+}
+
+})
+
+mc_results_df <- NULL
+for (data_set in names(mc_results)) {
+  mc_results_df <- rbind(
+    mc_results_df,
+    data.frame(
+      dist = mc_results[[data_set]]$params$dist,
+      m = mc_results[[data_set]]$params$m,
+      n = mc_results[[data_set]]$params$n,
+      p = mc_results[[data_set]]$params$p,
+      mu = mc_results[[data_set]]$params$mu,
+      JK = mc_results[[data_set]]$JK,
+      PJK = mc_results[[data_set]]$PJK,
+      Med = mc_results[[data_set]]$Med,
+      Tip = mc_results[[data_set]]$Tip,
+      Ht = mc_results[[data_set]]$Ht
+    )
+  )
+}
+save(
+    list=c("mc_results_df"),
+    file="mc_results_df_norm.Rdata"
+)
+
+```
+
+```{r}
+gen_data_cauchy <- function(m,n,p,mu,C,mc) {
+  m_data <- list()
+  for(i_mc in 1:mc) {
+    X <- matrix(rcauchy(n=m*p),nrow = m, ncol = p)
+    Y <- matrix(rcauchy(n=m*p,location = mu),nrow = m, ncol = p)
+    i_x_rnd <- sample.int(n = m, size=1)
+    u_list <- list()
+    for(ipert in 1:C) {
+      u_list[[ipert]] <- sample(n + m)
+    }
+    
+    m_data[[i_mc]] <- list(
+      params = list(
+        dist="cauchy",
+        m=m,
+        n=n,
+        p=p,
+        C=C,
+        mu=mu
+      ),
+      X=X,
+      Y=Y,
+      i_x_rnd=i_x_rnd,
+      u_list=u_list
+    )
+  }
+  m_data
+}
+
+gen_data_cauchy(m=5,n=5,p=2,mu=10,C=3L,mc=4L)
+
+```
+
+
+```{r}
+alpha <- 0.05
+mc_results <- list()
+
+system.time({
+
+for(m in c(10L,30L,50L)) {
+  for(p in c(2L,4L,18L)) {
+    for(mu in c(0, 1.95, 3.25, 5.45)) {
+      set.seed(20201121L)
+      
+      data_set <- paste0("cauchy n=m=",m," p=",p," mu=", mu)
+      cat(paste0("Doing: ",data_set,"\n"))
+      mc_data <- gen_data_cauchy(m=m,n=m,p=p,mu=mu,C=250L,mc=1000L)
+      
+      mc_semiresults <- mclapply(mc_data, calc_teststat_pvalues, mc.cores = 8)
+      
+      rm(mc_data)
+      save(
+          list=c("mc_semiresults"),
+          file=paste0(data_set,".Rdata")
+      )
+      
+      mc_results[[data_set]] <- calc_power(mc_semiresults,alpha)
+      rm(mc_semiresults)
+    }
+  }
+}
+
+})
+
+mc_results_df <- NULL
+for (data_set in names(mc_results)) {
+  mc_results_df <- rbind(
+    mc_results_df,
+    data.frame(
+      dist = mc_results[[data_set]]$params$dist,
+      m = mc_results[[data_set]]$params$m,
+      n = mc_results[[data_set]]$params$n,
+      p = mc_results[[data_set]]$params$p,
+      mu = mc_results[[data_set]]$params$mu,
+      JK = mc_results[[data_set]]$JK,
+      PJK = mc_results[[data_set]]$PJK,
+      Med = mc_results[[data_set]]$Med,
+      Tip = mc_results[[data_set]]$Tip,
+      Ht = mc_results[[data_set]]$Ht
+    )
+  )
+}
+save(
+    list=c("mc_results_df"),
+    file="mc_results_df_cauchy.Rdata"
+)
+mc_results_df
+```
+
+```{r}
+i_mc <- 1L
+data_set <- "norm n=m=10 p=2 mu=1.01"
+exp_data <- mc_data[[data_set]][[i_mc]]
+df <- rbind(
+  data.frame(pop="X",x=exp_data$X[,1],y=exp_data$X[,2],i=seq(1,exp_data$params$m),iz=seq(1,exp_data$params$m)),
+  data.frame(pop="Y",x=exp_data$Y[,1],y=exp_data$Y[,2],i=exp_data$params$m+seq(1,exp_data$params$n),iz=exp_data$params$m+seq(1,exp_data$params$n))
+)
+ggplot(df, aes(x,y,color=pop)) + geom_point() + geom_text(aes(label=iz),hjust=-.3, vjust=-.3)
+```
+
+```{r}
+
+
+system.time({
+  mc_semiresults[["test"]]<-lapply(mc_data[["test"]], calc_teststat_pvalues)
+})
+
+
+
+```
+
+
+500 mc norm n=m=10 p=2 mu=1.01
+N   user  system elapsed 
+ 1  193.609   0.000 193.562
+ 2   94.553   0.432  95.059 
+ 4  145.245   1.188  49.287 
+ 8  176.139   2.152  25.808
+16  334.022   4.989  23.606
+
+
+```{r}
+alpha <- 0.05
+#calculate final pvalue
+data_set <- "norm n=m=10 p=2 mu=1.01"
+semiresults <- mc_semiresults[[data_set]]
+
+
+
+
+```
+$JK
+[1] 0.3648
+
+$PJK
+[1] 0.3834

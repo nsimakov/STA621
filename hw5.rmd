@@ -1,0 +1,87 @@
+---
+title: Homework 4. Question 3.4.
+output: pdf_document
+---
+
+
+```{r message=FALSE, echo=FALSE}
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(tidyr)
+library(knitr)
+```
+
+
+```{r fig.width = 4, fig.height = 3}
+set.seed(20201112)
+generatex <- function(n, mu, beta,N){
+    # each experiment is column
+    epsilon <- matrix(rnorm(n*N), ncol = N)
+    
+    e <- matrix(rep_len(0.0,(n+1)*N), ncol = N)
+    X <- matrix(rep_len(0.0,n*N), ncol = N)
+    i <- 2L
+    for(i in seq(2,n+1)){
+        e[i,] <- beta*e[i-1,] + epsilon[i-1,]
+        X[i-1,] <- mu + e[i,]
+    }
+    epsilon[1,]
+    X
+}
+mle_mu <- function(X) {
+    X[1,]
+}
+mle_beta <- function(X) {
+    (apply(X,2,mean)-X[1,])/(apply(X[1:(nrow(X)-1L),],2,mean)-X[1,])
+}
+mu <- 0.5
+beta <- 0.7
+X <- generatex(7,mu,beta,5)
+X_df <- cbind(data.frame(i = seq(1, nrow(X))), as.data.frame(X))
+ggplot(tidyr::gather(X_df,"id","X",-i), aes(i,X,color=id)) + geom_line()
+```
+
+
+```{r fig.width = 4, fig.height = 3}
+set.seed(20201112)
+mu <- 0.5
+beta <- 0.7
+X <- generatex(50,mu,beta,5000)
+mu_est <- mle_mu(X)
+beta_est <- mle_beta(X)
+
+hist(mu_est)
+hist(beta_est, breaks=20000L, xlim=c(0,2))
+```
+
+From plots ML estimate mu look promising to be normal, estimate for beta is spikier and with long tails. In addition to that estimator for beta looks significantly biased.
+
+```{r}
+shapiro.test(mu_est)
+shapiro.test(beta_est)
+```
+
+Shapiro-Wilk normality test supports findings.
+
+```{r}
+set.seed(20201112)
+mu <- 0.5
+beta <- 0.7
+cat(paste("mu=",mu,"beta=",beta,"\n"))
+for(n in c(5,7,10,12,25,50)){
+    X <- generatex(n,mu,beta,5000)
+    mu_est <- mle_mu(X)
+    beta_est <- mle_beta(X)
+    mu_est_normtest <- shapiro.test(mu_est)
+    beta_est_normtest <- shapiro.test(beta_est)
+    cat(paste(
+        "n=",n,
+        "mu est norm p-value=", mu_est_normtest$p.value,
+        "beta est norm p-value=",beta_est_normtest$p.value,"\n"))
+}
+```
+
+ML estimate mu is normal, which is not surprising given that X[1]=mu+epsilon[1], i.e. it is normal.
+
+ML estimate for beta failed Shapiro-Wilk normality test with p-value < 0.05 for all n, thus it is not normal.

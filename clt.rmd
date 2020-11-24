@@ -1,0 +1,161 @@
+---
+title: "Confidence Interval: Bootstrap vs MC"
+author: nikolays
+date: 9/22/20
+output: html_notebook
+---
+
+```{r message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(knitr)
+```
+
+## Gamma distribution parameters
+
+![Gamma distribution](https://wikimedia.org/api/rest_v1/media/math/render/svg/3373bd46a7261833556cec0a5c95f51ab4b0e74d)
+
+```{r}
+# this is alpha
+shape <- 10
+# this is beta
+rate <- 1
+
+variance <- shape / rate^2
+cat("mean", shape / rate, "\n")
+cat("variance", variance, "\n")
+
+# Let's plot it
+gamma_df <- data.frame(x=seq(0,30,by = 0.1))
+gamma_df$f <- dgamma(gamma_df$x, shape=shape, rate = rate)
+ggplot(gamma_df, aes(x=x,y=f)) + geom_line()
+```
+
+## Checking out single n
+
+```{r}
+# number of measurements in single experiment
+n <- 100
+# number of experiments
+N <- 10000L
+set.seed(20200922)
+# each experiment is column
+Xmc <- matrix(rgamma(n*N, shape=shape, rate = rate), ncol = N)
+# each resample is column
+Xbootstraped <-matrix(sample(Xmc[,1],size = n*N, replace = T), ncol = N)
+
+# calculate variance estimate
+var_mc <- apply(Xmc,2,var)
+var_bootstraped <- apply(Xbootstraped,2,var)
+
+cat("CI MC:\n")
+quantile(var_mc, c(0.025,0.975))
+cat("CI bootstrap:\n")
+quantile(var_bootstraped, c(0.025,0.975))
+
+# let's plot some histogramms
+plot_grid(
+    ggplot(mapping = aes(var_mc)) + geom_histogram(breaks=seq(4,20,by=0.25)),
+    ggplot(mapping = aes(var_bootstraped)) + geom_histogram(breaks=seq(4,20,by=0.25)),
+    ncol=1
+)
+```
+
+
+
+## Varying n
+
+```{r}
+# number of measurements in single experiment
+n_list <- c(10L, 20L, 50L, 100L, 200L, 400L, 800L, 1600L)
+# number of experiments
+N <- 10000L
+
+results <- NULL
+set.seed(20200922)
+
+
+for(n in n_list) {
+    # each experiment is column
+    Xmc <- matrix(rgamma(n*N, shape=shape, rate = rate), ncol = N)
+    # each resample is column
+    Xbootstraped <-matrix(sample(Xmc[,1],size = n*N, replace = T), ncol = N)
+
+    # calculate variance estimate
+    var_mc <- apply(Xmc,2,var)
+    var_bootstraped <- apply(Xbootstraped,2,var)
+
+    ci_mc <- quantile(var_mc, c(0.025,0.975))
+    ci_bootstraped <- quantile(var_bootstraped, c(0.025,0.975))
+    results <- rbind(
+        results,
+        data.frame(
+            n=n, method="MC",
+            lower_bound=ci_mc[[1]],
+            upper_bound=ci_mc[[2]]
+        ),
+        data.frame(
+            n=n, method="bootstrap",
+            lower_bound=ci_bootstraped[[1]],
+            upper_bound=ci_bootstraped[[2]]
+        )
+    )
+}
+kable(results,digits = 1)
+```
+
+```{r}
+ggplot(results, aes(x=n, y=lower_bound, color=method)) +
+    geom_line() + geom_point() +
+    geom_line(aes(y=upper_bound)) + geom_point(aes(y=upper_bound)) +
+    ylab("CI for Variance Est.")
+```
+
+
+## Varying n
+
+```{r}
+# number of measurements in single experiment
+n_list <- c(10L, 20L, 50L, 100L, 200L, 400L, 800L, 1600L)
+# number of experiments
+N <- 10000L
+
+results <- NULL
+set.seed(20200922)
+
+for(run_id in 1:1000){
+for(n in n_list) {
+    # each experiment is column
+    Xmc <- matrix(rgamma(n*N, shape=shape, rate = rate), ncol = N)
+    # each resample is column
+    Xbootstraped <-matrix(sample(Xmc[,1],size = n*N, replace = T), ncol = N)
+
+    # calculate variance estimate
+    var_mc <- apply(Xmc,2,var)
+    var_bootstraped <- apply(Xbootstraped,2,var)
+
+    ci_mc <- quantile(var_mc, c(0.025,0.975))
+    ci_bootstraped <- quantile(var_bootstraped, c(0.025,0.975))
+    results <- rbind(
+        results,
+        data.frame(
+            n=n, method="MC",
+            lower_bound=ci_mc[[1]],
+            upper_bound=ci_mc[[2]]
+        ),
+        data.frame(
+            n=n, method="bootstrap",
+            lower_bound=ci_bootstraped[[1]],
+            upper_bound=ci_bootstraped[[2]]
+        )
+    )
+}}
+```
+
+```{r}
+ggplot(results, aes(x=as.factor(n), y=lower_bound, color=method)) +
+    geom_boxplot() +
+    geom_boxplot(aes(y=upper_bound)) +
+    ylab("CI for Variance Est.")
+```
